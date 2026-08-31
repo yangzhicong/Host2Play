@@ -756,6 +756,7 @@ def main():
             caption = build_notification(True, url, server_name, old_expire, new_expire)
             total_success += 1
         else:
+            log(f"续期失败，原因: {failure_reason}", "ERROR")
             caption = build_notification(
                 False, url, server_name, old_expire, failure_reason=failure_reason
             )
