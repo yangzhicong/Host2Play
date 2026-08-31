@@ -260,6 +260,7 @@ def is_recaptcha_solved(page):
     return False
 
 def is_blocked(page):
+    """仅检测真·IP 封锁（Google dos 封锁页），音频错误消息不算封锁。"""
     bframe = find_recaptcha_frame(page, "bframe")
     if not bframe:
         return False
@@ -267,8 +268,6 @@ def is_blocked(page):
         return bool(bframe.run_js("""
             const h = document.querySelector('.rc-doscaptcha-header-text');
             if (h && h.textContent.toLowerCase().includes('try again later')) return true;
-            const e = document.querySelector('.rc-audiochallenge-error-message');
-            if (e && e.offsetParent !== null) return true;
             return false;
         """))
     except Exception:
