@@ -42,14 +42,14 @@ def log(msg, level="INFO"):
     prefix = {"INFO": "[INFO]", "WARN": "[WARN]", "ERROR": "[ERROR]"}.get(level, "[INFO]")
     print(f"{prefix} {msg}", flush=True)
 
-# WARP IP 去重管理
+# WARP IP 轮换管理
 class WarpManager:
     """
     系统级 WARP VPN IP 轮换。
-    _used_ips 记录本次运行已用过的 IP，重复时自动重试。
+    每轮续期失败时执行一次注销 → 重注册 → 连接，换取新 IP。
     """
     def __init__(self):
-        self._used_ips: set = set()
+        pass
 
     def _run(self, args: list, timeout: int = 30) -> subprocess.CompletedProcess:
         cmd = ["sudo", "warp-cli", "--accept-tos"] + args
@@ -114,52 +114,20 @@ class WarpManager:
             return ""
         return self._get_current_ip()
 
-    def rotate_ip(self, attempt_idx: int = 0, max_attempts: int = 5) -> bool:
+    def rotate_ip(self) -> bool:
         """
-        轮换 WARP IP。
-        若新 IP 已被本次运行使用过则继续重试，最多尝试 max_attempts 次。
-        attempt_idx: 当前是第几次尝试（0-based），仅用于日志展示。
+        执行一次完整的注销 → 重注册 → 连接流程，换取新 IP。
+        成功拿到 IP 返回 True；失败返回 False（WARP 连不上，继续重试无意义）。
         """
-        log(f"[WARP] ========== 第 {attempt_idx + 1} 次 IP 轮换 ==========")
-        log(f"[WARP] 已用 IP 池: {self._used_ips if self._used_ips else '(空)'}")
+        log("[WARP] ========== 开始 IP 轮换 ==========")
+        new_ip = self._do_one_rotate()
 
-        old_ip = self._get_current_ip()
-        log(f"[WARP] 旧 IP: {old_ip}")
+        if not new_ip:
+            log("[WARP] ❌ 轮换失败（WARP 未连接），放弃本轮", "ERROR")
+            return False
 
-        for i in range(1, max_attempts + 1):
-            log(f"[WARP] 轮换尝试 {i}/{max_attempts}")
-            new_ip = self._do_one_rotate()
-
-            if not new_ip:
-                log(f"[WARP] ⚠️  第 {i} 次轮换失败，继续重试", "WARN")
-                continue
-
-            if new_ip in self._used_ips:
-                log(f"[WARP] ♻️  IP {new_ip} 已被本次运行使用过，继续尝试...", "WARN")
-                continue
-
-            # 拿到未用过的新 IP
-            self._used_ips.add(new_ip)
-            if new_ip != old_ip:
-                log(f"[WARP] ✅ IP 已变化: {old_ip} → {new_ip}")
-            else:
-                log(f"[WARP] ⚠️  IP 与旧 IP 相同（{new_ip}），但未被本轮其他请求使用，接受", "WARN")
-            log(f"[WARP] 已用 IP 池: {self._used_ips}")
-            return True
-
-        # 全部尝试都拿到重复 IP，接受并继续
-        log(f"[WARP] ⚠️  {max_attempts} 次尝试均为重复 IP，使用当前 IP 继续执行", "WARN")
-        new_ip = self._get_current_ip()
-        if new_ip:
-            self._used_ips.add(new_ip)
+        log(f"[WARP] ✅ 轮换成功，新出口 IP: {new_ip}")
         return True
-
-    def record_initial_ip(self):
-        """记录初始 IP，避免首次续期就分配到重复 IP。"""
-        ip = self._get_current_ip()
-        if ip:
-            self._used_ips.add(ip)
-            log(f"[WARP] 记录初始 IP: {ip}，已用 IP 池: {self._used_ips}")
 
 # 全局 WARP 管理器（单例）
 _warp_manager: WarpManager = None
@@ -560,11 +528,8 @@ def solve_recaptcha(page):
 
     raise CaptchaBlocked("验证码达到最大尝试次数")
 
-# 单个 URL 续期流程（IP 去重重试）
-def renew_single_url(url, attempt_idx: int = 0):
-    """
-    attempt_idx: 当前是第几个 URL（0-based），传给 WarpManager 用于日志展示。
-    """
+# 单个 URL 续期流程（每轮失败换 IP 重试）
+def renew_single_url(url):
     success = False
     server_name = "未知"
     old_expire = "未知"
@@ -689,7 +654,7 @@ def renew_single_url(url, attempt_idx: int = 0):
                 try:
                     solved = solve_recaptcha(page)
                 except CaptchaBlocked:
-                    log("IP 被封锁，使用 WARP 去重轮换后重试", "WARN")
+                    log("IP 被封锁，轮换 WARP IP 后重试", "WARN")
                     failure_reason = "IP 被 reCAPTCHA 封锁"
                     try:
                         page.quit()
@@ -697,8 +662,9 @@ def renew_single_url(url, attempt_idx: int = 0):
                         pass
                     page = None
                     if attempt < MAX_RENEW_RETRIES_PER_URL:
-                        # ✅ 去重轮换：传入当前尝试序号
-                        get_warp_manager().rotate_ip(attempt_idx=attempt - 1)
+                        # 每轮失败就换一次 IP，换成功继续下一轮；换失败放弃本轮
+                        if not get_warp_manager().rotate_ip():
+                            break
                         continue
                     break
                 except Exception as e:
@@ -744,8 +710,9 @@ def renew_single_url(url, attempt_idx: int = 0):
                         except Exception:
                             pass
                         page = None
-                    # ✅ 去重轮换
-                    get_warp_manager().rotate_ip(attempt_idx=attempt - 1)
+                    # 每轮失败就换一次 IP，换成功继续下一轮；换失败放弃本轮
+                    if not get_warp_manager().rotate_ip():
+                        break
                     continue
                 break
 
@@ -776,9 +743,6 @@ def main():
         log("请在 RENEW_URLS 列表中添加续期链接", "ERROR")
         sys.exit(1)
 
-    # ✅ 记录初始 IP，防止首个 URL 分配到已用 IP
-    get_warp_manager().record_initial_ip()
-
     total_success = 0
     for idx, url in enumerate(RENEW_URLS, 1):
         log(f"{'#'*60}")
@@ -786,7 +750,7 @@ def main():
         log(f"{'#'*60}")
 
         success, server_name, old_expire, new_expire, screenshot, failure_reason = \
-            renew_single_url(url, attempt_idx=idx - 1)
+            renew_single_url(url)
 
         if success:
             caption = build_notification(True, url, server_name, old_expire, new_expire)
