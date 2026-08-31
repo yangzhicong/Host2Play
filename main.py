@@ -25,7 +25,7 @@ RENEW_URLS = [
 ]
 
 MAX_CAPTCHA = 3
-MAX_RENEW_RETRIES_PER_URL = 2  # 测试用：1 次原 IP + 轮换 1 次后 1 次新 IP，快速看轮换效果
+MAX_RENEW_RETRIES_PER_URL = 3  # 测试用：原 IP + 轮换后最多 3 次尝试，快速看轮换效果
 
 # 自定义异常
 class CaptchaBlocked(Exception):
