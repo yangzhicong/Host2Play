@@ -558,7 +558,7 @@ def solve_recaptcha(page):
         reload_challenge(page)
         time.sleep(random.uniform(2, 4))
 
-    raise RuntimeError("验证码达到最大尝试次数")
+    raise CaptchaBlocked("验证码达到最大尝试次数")
 
 # 单个 URL 续期流程（IP 去重重试）
 def renew_single_url(url, attempt_idx: int = 0):
